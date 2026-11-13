@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Kalodata Product Filter",
+  "version": "1.4.2",
+  "description": "Lọc sản phẩm đang hiển thị trên kalodata.com theo doanh thu, lượt bán, giá, từ khoá... và phân tích bằng Claude.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://api.anthropic.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.kalodata.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "panel.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Mở bộ lọc Kalodata"
+  }
+}

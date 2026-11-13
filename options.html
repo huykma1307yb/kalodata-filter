@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Kalodata Filter – Tuỳ chọn</title>
+<style>
+  body{font:14px sans-serif;max-width:480px;margin:32px auto;padding:0 16px;color:#222}
+  label{display:block;margin:14px 0 4px;font-weight:600}
+  input{width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box}
+  button{margin-top:16px;padding:8px 16px;border:0;border-radius:6px;background:#6c3cf0;color:#fff;cursor:pointer}
+  small{color:#666}
+</style>
+</head>
+<body>
+  <h2>Cài đặt Claude</h2>
+  <label for="key">API key</label>
+  <input id="key" type="password" placeholder="sk-ant-...">
+  <small>Lưu cục bộ trong trình duyệt, chỉ gửi tới api.anthropic.com.</small>
+  <label for="model">Model</label>
+  <input id="model" placeholder="claude-opus-5-5">
+  <button id="save">Lưu</button> <span id="msg"></span>
+  <script src="options.js"></script>
+</body>
+</html>
