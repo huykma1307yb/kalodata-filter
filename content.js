@@ -27,14 +27,27 @@
   // Tìm bảng: hỗ trợ <table> và bảng dạng Ant Design
   function getTable() {
     const tables = [...document.querySelectorAll('table')]
-      .filter(t => t.querySelector('tbody tr'))
+      .filter(t => t.querySelector('tbody tr') && !t.closest('#kf-panel, #kf-board') && t.offsetParent !== null && t.getBoundingClientRect().height > 0)
       .sort((a, b) => b.querySelectorAll('tbody tr').length - a.querySelectorAll('tbody tr').length);
     if (!tables.length) return null;
     const body = tables[0];
-    // Ant Design tách header & body thành 2 table
-    const wrap = body.closest('.ant-table') || body.parentElement;
-    const headCells = [...(wrap.querySelector('thead') || body).querySelectorAll('thead th')];
-    const headers = headCells.map(th => th.innerText.trim().split('\n')[0]);
+    const rows0 = [...body.querySelectorAll('tbody tr')].filter(r => !r.classList.contains('ant-table-measure-row') && !r.classList.contains('kf-clone'));
+    const nCells = rows0[0] ? rows0[0].children.length : 0;
+    // Tiêu đề có thể nằm ở bảng riêng (header cố định) → chọn thead khớp số cột nhất, gần bảng nhất
+    const cellText = th => (th.innerText || th.textContent || '').replace(/[\uE000-\uF8FF\u25A0-\u25FF?]/g, '').replace(/\s+/g, ' ').trim();
+    let headers = [], best = -Infinity;
+    for (const thead of document.querySelectorAll('thead')) {
+      if (thead.closest('#kf-panel, #kf-board')) continue;
+      const hs = [];
+      for (const th of thead.querySelectorAll('tr:last-child > th, tr:last-child > td')) {
+        if (/scrollbar/.test(th.className)) continue;
+        hs.push(cellText(th));
+        for (let k = 1; k < (th.colSpan || 1); k++) hs.push('');
+      }
+      const near = thead.closest('.ant-table, [class*="table" i]') === body.closest('.ant-table, [class*="table" i]') ? 5 : 0;
+      const score = hs.filter(Boolean).length + near - Math.abs(hs.length - nCells) * 3;
+      if (score > best) { best = score; headers = hs; }
+    }
     const rows = [...body.querySelectorAll('tbody tr')].filter(r => !r.classList.contains('ant-table-measure-row') && !r.classList.contains('kf-clone'));
     return { headers, rows };
   }
@@ -215,11 +228,71 @@
 
   // Bấm tab theo chữ hiển thị, vd "BXH sản phẩm"
   async function clickTab(name) {
-    const el = visibleLeaves(new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'))[0];
+    // Cùng tên có thể vừa ở menu chính (đầu trang) vừa là tab trong trang → chọn tab trong trang (nằm thấp nhất, ngoài header/nav)
+    const re = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    const navBottom = Math.max(0, ...[...document.querySelectorAll('header, nav, [class*="header" i]')]
+      .filter(h => !h.closest('#kf-panel') && h.getBoundingClientRect().top < 10)
+      .map(h => h.getBoundingClientRect().bottom));
+    const cands = visibleLeaves(re).filter(el => !el.closest('header, nav') && el.getBoundingClientRect().top > Math.max(navBottom, 80));
+    const el = cands.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
     if (!el) return false;
+    const path = location.pathname;
     el.click();
     await sleep(3000); // chờ bảng tải
+    if (location.pathname !== path) { history.back(); await sleep(2500); return false; } // lỡ sang trang khác → quay lại
     return true;
+  }
+
+
+  // Chọn bộ lọc ở cột trái của Kalodata, vd "Sản phẩm affiliate" → "Có", rồi bấm "Nộp"
+  const chipExists = (group, option) => visibleLeaves(/:/).some(el =>
+    !el.closest('#kf-panel') && normCol(el.textContent).includes(normCol(group) + normCol(option)));
+  const leftLeaves = re => visibleLeaves(re).filter(el => el.getBoundingClientRect().left < window.innerWidth * 0.3);
+  async function applySidebarFilters(list) {
+    const notes = [];
+    let changed = false;
+    const groups = list.map(x => normCol(x.group)).concat(['sảnphẩmaffiliate', 'nguồndoanhthukênh', 'nguồndoanhthunộidung']);
+    for (const { group, option } of list) {
+      if (chipExists(group, option)) { notes.push(`✓ Kalodata: ${group}: ${option} (đã có)`); continue; }
+      const label = leftLeaves(/./).find(el => normCol(el.textContent) === normCol(group));
+      if (!label) { notes.push(`⚠️ Không thấy bộ lọc "${group}" ở cột trái`); continue; }
+      // tìm lựa chọn: trùng hẳn, hoặc chứa chữ cần tìm (chọn chữ ngắn nhất); chờ ô lựa chọn hiện ra tối đa ~3 giây
+      const findOpt = () => {
+        const want = normCol(option);
+        // gồm cả phần tử có biểu tượng ⓘ đi kèm: so phần chữ riêng của phần tử (không tính phần tử con)
+        const ownText = el => [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim();
+        const all = [...document.querySelectorAll('body *')].filter(el => !el.closest('#kf-panel, #kf-board, #kf-toggle') && el.offsetParent !== null
+          && el !== label && !el.contains(label) && ownText(el))
+          .map(el => { const o = Object.create(null); o.el = el; o.textContent = ownText(el); o.getBoundingClientRect = () => el.getBoundingClientRect(); return o; });
+        const exact = all.filter(el => normCol(el.textContent) === want);
+        const loose = all.filter(el => { const t = normCol(el.textContent); return t.includes(want) && t.length <= want.length + 12 && !groups.includes(t) && !el.textContent.includes(':'); })
+          .sort((a, b) => a.textContent.length - b.textContent.length);
+        const below = list => list.find(el => el.getBoundingClientRect().top >= label.getBoundingClientRect().top - 5) || list[0];
+        return below(exact) || below(loose);
+      };
+      let opt = null;
+      for (let t = 0; t < 2 && !opt; t++) {
+        (t === 0 ? label : (label.closest('li, [role="button"], [class*="item" i]') || label.parentElement)).click();
+        for (let w = 0; w < 8 && !(opt = findOpt()); w++) await sleep(400);
+      }
+      if (!opt) { notes.push(`⚠️ Không thấy lựa chọn "${option}" của "${group}"`); document.body.click(); continue; }
+      opt = opt.el || opt;
+      (opt.closest('label, li, button, [role="option"], [role="menuitem"], [role="checkbox"], [role="radio"]') || opt).click();
+      await sleep(500);
+      const ok = [...document.querySelectorAll('button')].find(b => !b.closest('#kf-panel') && b.offsetParent !== null && !b.disabled
+        && /^(Xác nhận|OK|Đồng ý|Áp dụng)$/i.test(b.innerText.trim()));
+      ok?.click();
+      await sleep(400);
+      changed = true;
+      notes.push(`✓ Kalodata: ${group}: ${option}`);
+    }
+    if (changed) {
+      const submit = [...document.querySelectorAll('button')].find(b => !b.closest('#kf-panel') && b.offsetParent !== null && !b.disabled && /^Nộp$/i.test(b.innerText.trim()));
+      const before = firstRowText();
+      if (submit) { submit.click(); for (let t = 0; t < 20 && firstRowText() === before; t++) await sleep(400); await sleep(800); }
+      else notes.push('⚠️ Không thấy nút "Nộp" của Kalodata — hãy bấm Nộp rồi chạy lại');
+    }
+    return notes;
   }
 
   async function executePlan(plan) {
@@ -232,6 +305,11 @@
     if (plan.days > 0) {
       setStatus(`📅 Đang chọn ${plan.days} ngày...`);
       notes.push(await setTimeRange(plan.days) ? `✓ Thời gian: ${plan.days} ngày` : `⚠️ Không tự chọn được ${plan.days} ngày — hãy chọn tay ở cột trái rồi bấm Thực hiện lại`);
+    }
+    // Bước 2b: bộ lọc có sẵn của Kalodata (cột trái)
+    if (plan.kalodataFilters?.length) {
+      setStatus('🎛️ Đang chọn bộ lọc của Kalodata...');
+      notes.push(...await applySidebarFilters(plan.kalodataFilters));
     }
     // Bước 3: áp bộ lọc
     const manual = load().exc || '';
@@ -249,13 +327,20 @@
     notes.push(`✓ Loại trừ: ${[manual, plan.exclude].filter(Boolean).join(', ') || '(không)'}`);
     if (plan.include) notes.push(`✓ Phải có: ${plan.include}`);
     if (f.priceMin || f.priceMax) notes.push(`✓ Giá: ${f.priceMin || '…'} → ${f.priceMax || '…'}`);
-    plan.rules.filter(r => r.min || r.max).forEach(r => notes.push(`✓ ${r.column}: ${r.min || '…'} → ${r.max || '…'}`));
+    const curHs = (getTable()?.headers || []).map((h, i) => normCol(h || `Cột ${i + 1}`));
+    plan.rules.filter(r => r.min || r.max).forEach(r => {
+      const found = findCol(curHs, r.column) >= 0;
+      notes.push(found ? `✓ ${r.column}: ${r.min || '…'} → ${r.max || '…'}`
+        : `⚠️ Không thấy cột "${r.column}" — bỏ qua. Các cột đọc được: ${(getTable()?.headers || []).filter(Boolean).join(' | ') || '(không đọc được tiêu đề)'}`);
+    });
+    if (plan.unsupported) notes.push(`⚠️ Chưa lọc được: ${plan.unsupported} — hãy chọn ở bộ lọc bên trái của Kalodata rồi chạy lại`);
     lastSort = plan.sortColumn;
+    lastSort2 = plan.sortColumn2 || '';
     collected = await collectPages(f);
     const sortedBy = showResults(plan.sortColumn, plan.rules.map(r => r.column), collected);
     notes.push(`✓ Gom được ${collected.items.length} sản phẩm khớp điều kiện`);
     notes.push(...dropSummary(collected.dropped));
-    if (sortedBy) notes.push(`↓ Xếp theo: ${sortedBy}`);
+    if (sortedBy) notes.push(`↓ Xếp theo: ${sortedBy}${lastSort2 ? `, rồi ${lastSort2}` : ''}`);
     setStatus(notes.join('\n'));
     // Bước 4: phân tích
     if (plan.question) {
@@ -267,7 +352,8 @@
   // Danh sách kết quả (các dòng còn lại sau lọc), xếp theo cột chọn
   // ---- Gom kết quả qua nhiều trang ----
   let collected = null;
-  let lastSort = ''; // cột xếp hạng của lệnh gần nhất // { headers, items } của lệnh gần nhất → dùng cho Hỏi AI
+  let lastSort = ''; // cột xếp hạng của lệnh gần nhất
+  let lastSort2 = ''; // cột xếp phụ (khi bằng nhau) // { headers, items } của lệnh gần nhất → dùng cho Hỏi AI
   const MAX_PAGES = 10;
   let pageWarn = '';
 
@@ -532,13 +618,15 @@
     const hs = headers.map((h, i) => h || `Cột ${i + 1}`);
     const isNum = i => items.filter(it => !isNaN(parseNum(it.d[i])) && !/[a-zà-ỹ]{4,}/i.test(it.d[i] || '')).length >= items.length * 0.7;
     const key = (sortCol || '').toLowerCase();
-    let si = hs.findIndex(h => h === sortCol);
-    if (si < 0 && key) si = hs.findIndex((h, i) => isNum(i) && (h.toLowerCase().includes(key) || key.includes(h.toLowerCase())));
+    let si = findCol(hs.map(normCol), sortCol);
+    if (si >= 0 && !isNum(si)) si = -1;
     if (si < 0 && /tăng trưởng/.test(key)) si = hs.findIndex((h, i) => isNum(i) && /tăng trưởng/i.test(h));
     if (si < 0) si = hs.findIndex((h, i) => isNum(i) && /doanh thu/i.test(h));
     const show = [...new Set([si >= 0 ? hs[si] : '', ...extraCols, ...hs.filter(h => /doanh thu/i.test(h))])]
       .map(h => hs.indexOf(h)).filter(i => i >= 0 && isNum(i)).slice(0, 3);
-    if (si >= 0) items.sort((a, b) => (parseNum(b.d[si]) || -Infinity) - (parseNum(a.d[si]) || -Infinity));
+    const s2 = findCol(hs.map(normCol), lastSort2);
+    const v = (it, i) => { const x = sortVal(it.d[i]); return isNaN(x) ? -Infinity : x; };
+    if (si >= 0) items.sort((a, b) => (v(b, si) - v(a, si)) || (s2 >= 0 && s2 !== si ? v(b, s2) - v(a, s2) : 0));
     const esc = t => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     box.innerHTML = items.length ? items.map(it => `
       <li><b class="kf-name" title="${esc(it.name)}">${esc(it.name)}</b><small>${[...(isNaN(rowPrice(it.d)) ? [] : [`Giá: ${rowPrice(it.d).toLocaleString('vi-VN')}₫`]), ...show.map(i => `${esc(hs[i])}: ${esc(it.d[i] || '')}`)].join(' · ')}</small></li>`).join('')
@@ -584,6 +672,27 @@
     return m ? parseNum(m[0]) : NaN;
   };
 
+  // so tên cột "mềm": bỏ dấu cách/ký hiệu, coi Tỷ = Tỉ
+  const normCol = s => (s || '').normalize('NFC').toLowerCase().replace(/tỷ/g, 'tỉ').replace(/[^a-z0-9à-ỹ%]+/g, '');
+  // tìm cột khớp nhất: trùng hẳn > cột chứa tên cần tìm > tên cần tìm chứa tên cột (chọn cột tên dài nhất)
+  function findCol(hs, name) {
+    const k = normCol(name);
+    if (!k) return -1;
+    let i = hs.indexOf(k);
+    if (i >= 0) return i;
+    i = hs.findIndex(h => h && h.includes(k));
+    if (i >= 0) return i;
+    let best = -1;
+    hs.forEach((h, j) => { if (h && h.length >= 4 && k.includes(h) && (best < 0 || h.length > hs[best].length)) best = j; });
+    return best;
+  }
+
+  // Giá trị để xếp hạng: ngày "04/10/2026" → mốc thời gian, còn lại là số
+  const sortVal = t => {
+    const m = String(t || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    return m ? Date.UTC(+m[3], +m[2] - 1, +m[1]) : parseNum(t);
+  };
+
   // Hàm kiểm tra 1 dòng có qua bộ lọc không (dùng cho cả lọc tại chỗ và gom nhiều trang)
   function makeMatcher(f, headers) {
     const inc = words(f.inc);
@@ -592,6 +701,14 @@
       const m = w.match(/^(.*?)\s*\(\s*trừ\s+(.*)\)$/);
       return m ? { w: m[1].trim(), keep: m[2].split('/').map(x => x.trim()).filter(Boolean) } : { w, keep: [] };
     });
+    // điều kiện Min/Max theo cột: so tên cột "mềm" (Tỷ/Tỉ, hoa/thường, khoảng trắng)
+    const hs = headers.map((h, i) => normCol(h || `Cột ${i + 1}`));
+    const rules = [];
+    for (const [k, rule] of Object.entries(f)) {
+      if (!rule || typeof rule !== 'object') continue;
+      const i = findCol(hs, k);
+      if (i >= 0) rules.push([i, rule]);
+    }
     return data => {
       const text = data.join(' ').toLowerCase();
       if (!text.trim()) return 'dòng trống';
@@ -607,9 +724,7 @@
           if (f.priceMax && p > parseNum(f.priceMax)) return `giá > ${f.priceMax}`;
         }
       }
-      for (let i = 0; i < headers.length; i++) {
-        const rule = f[headers[i] || `Cột ${i + 1}`];
-        if (!rule) continue;
+      for (const [i, rule] of rules) {
         const v = parseNum(data[i]);
         if (rule.min !== undefined && !(v >= parseNum(rule.min))) return `${headers[i]} < ${rule.min}`;
         if (rule.max !== undefined && !(v <= parseNum(rule.max))) return `${headers[i]} > ${rule.max}`;

@@ -46,7 +46,7 @@ async function analyze({ question, csv }) {
 const PLAN_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['page', 'tab', 'days', 'include', 'exclude', 'priceMin', 'priceMax', 'rules', 'sortColumn', 'question'],
+  required: ['page', 'tab', 'days', 'include', 'exclude', 'priceMin', 'priceMax', 'rules', 'kalodataFilters', 'sortColumn', 'sortColumn2', 'unsupported', 'question'],
   properties: {
     page: { type: 'string', enum: ['category', 'current'] },
     tab: { type: 'string' },
@@ -65,6 +65,17 @@ const PLAN_SCHEMA = {
       }
     },
     sortColumn: { type: 'string' },
+    sortColumn2: { type: 'string' },
+    unsupported: { type: 'string' },
+    kalodataFilters: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['group', 'option'],
+        properties: { group: { type: 'string' }, option: { type: 'string' } }
+      }
+    },
     question: { type: 'string' }
   }
 };
@@ -73,13 +84,19 @@ async function plan({ command, columns, url }) {
   const text = await callClaude({
     system: `Bạn chuyển câu lệnh tiếng Việt của người dùng thành kế hoạch thao tác cho extension lọc dữ liệu trên Kalodata (TikTok Shop Việt Nam). Trả về JSON đúng schema:
 - page: "category" CHỈ khi lệnh nói rõ muốn mở danh sách ngành hàng/danh mục; còn lại "current" (giữ trang hiện tại). Nếu đang ở trang /product (danh sách sản phẩm) thì luôn "current" và tab "".
-- tab: tên tab cần bấm trên trang chi tiết ngành hàng nếu lệnh liên quan: "BXH sản phẩm" (tìm sản phẩm), "BXH cửa hàng" (cửa hàng/shop), "BXH nhà sáng tạo" (KOL/creator), "Tổng quan", "Chỉ số cốt lõi"; "" nếu không cần. Khi đang ở trang /category/detail thì dùng page "current".
+- tab: tên tab cần bấm trên trang chi tiết ngành hàng nếu lệnh liên quan: "BXH sản phẩm" (tìm sản phẩm), "BXH cửa hàng" (cửa hàng/shop), "BXH nhà sáng tạo" (KOL/creator), "Tổng quan", "Chỉ số cốt lõi"; trên trang chi tiết sản phẩm (/product/detail) có các tab "Video & Quảng cáo", "Nhà sáng tạo", "Live", "Phân tích SKU", "Đánh giá sản phẩm". Chỉ đặt tab khi đang ở trang chi tiết (/product/detail hoặc /category/detail); ở trang khác luôn để "". Nếu lệnh nói về video/creator của MỘT sản phẩm đang mở thì dùng tab trong trang đó. "" nếu bảng đang hiện đã phù hợp với lệnh. Khi đang ở trang /category/detail thì dùng page "current".
 - days: số ngày của khoảng thời gian cần xem (vd 7, 30, 90); 0 nếu lệnh không nói.
 - include: từ khoá BẮT BUỘC có (cách nhau dấu phẩy), "" nếu không có.
 - exclude: từ khoá loại trừ (áp lên toàn bộ chữ của dòng, gồm tên sản phẩm/ngành hàng), cách nhau dấu phẩy, viết thường. Cú pháp ngoại lệ: "từ (trừ a/b)" nghĩa là loại dòng chứa "từ" trừ khi dòng chứa "a" hoặc "b". Mỗi từ khớp theo chuỗi con trong tên dòng, nên hãy liệt kê các cách Kalodata đặt tên ngành hàng tiếng Việt (vd thời trang → "thời trang, trang phục, đồ lót, giày, túi, phụ kiện thời trang"; đồ ăn → "đồ ăn, đồ uống, thực phẩm"; thực phẩm chức năng → "thực phẩm chức năng, thực phẩm bổ sung, vitamin"; điện tử chỉ lấy phụ kiện → "điện tử (trừ phụ kiện), điện thoại (trừ phụ kiện), máy tính (trừ phụ kiện)"; ốp điện thoại → "ốp lưng, ốp điện thoại, bao da"). Tránh từ quá ngắn dễ khớp nhầm.
 - priceMin / priceMax: giới hạn GIÁ BÁN sản phẩm nếu người dùng nêu (vd "giá dưới 200k" → priceMax "200k"; "từ 50k đến 300k"), dạng "50k", "1.5tr"; "" nếu không có. Không đưa giá bán vào rules.
-- rules: điều kiện min/max cho cột số. "column" PHẢI trùng chính xác một tên trong danh sách cột được cung cấp. min/max dạng "50tr", "1tỉ", "10%" hoặc "" nếu không có. Chỉ thêm khi người dùng nêu ngưỡng.
+- rules: điều kiện min/max cho cột số. "column" PHẢI chép NGUYÊN VĂN một tên trong danh sách cột được cung cấp (giữ đúng chính tả, vd "Tỉ lệ" chứ không đổi thành "Tỷ lệ"). min/max dạng "50tr", "1tỉ", "10%" hoặc "" nếu không có. Chỉ thêm khi người dùng nêu ngưỡng.
 - sortColumn: tên cột (trùng chính xác danh sách cột) để xếp danh sách kết quả từ cao xuống thấp — cột người dùng quan tâm nhất; nếu không rõ thì chọn cột doanh thu. Nếu cột cần (vd tăng trưởng) chưa có trong danh sách vì sẽ xuất hiện sau khi bấm tab, cứ ghi tên mô tả như "tăng trưởng". "" nếu không có cột nào.
+- kalodataFilters: bộ lọc có sẵn ở cột trái của Kalodata mà extension sẽ tự bấm. Đã biết trên trang Sản phẩm:
+  · "sản phẩm affiliate" → [{"group":"Sản phẩm affiliate","option":"Có"},{"group":"Nguồn doanh thu(Kênh)","option":"Affiliate"}]
+  · "không phải affiliate" → [{"group":"Sản phẩm affiliate","option":"Không"}]
+  Ghi đúng chính tả như trên. [] nếu không cần. Điều kiện đã đưa vào đây thì KHÔNG ghi vào unsupported.
+- sortColumn2: cột xếp phụ khi người dùng nêu 2 tiêu chí (vd "lượt bán cao nhất và ngày đăng mới nhất" → sortColumn "Lượt bán", sortColumn2 "Ngày đăng tải"); "" nếu chỉ 1 tiêu chí. Cột ngày được xếp mới nhất trước.
+- unsupported: liệt kê ngắn các điều kiện KHÔNG thể lọc bằng các cột số / từ khoá / giá ở trên (vd "sản phẩm affiliate", "phương thức gửi hàng", "ngày đăng tải", "đánh giá" nếu không có cột tương ứng), cách nhau dấu phẩy; "" nếu không có. Đừng cố biến chúng thành exclude/include.
 - question: nếu người dùng muốn xem/so sánh/xếp hạng/chọn thì viết câu yêu cầu phân tích dữ liệu sau khi lọc (vd xếp hạng theo các cột người dùng quan tâm và đề xuất ngành nên chọn); "" nếu không cần.`,
     messages: [{ role: 'user', content: `Trang hiện tại: ${url}\nCác cột số đang có: ${JSON.stringify(columns)}\n\nLệnh: ${command}` }],
     output_config: { format: { type: 'json_schema', schema: PLAN_SCHEMA } }

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kalodata Product Filter",
-  "version": "1.6.1",
+  "version": "1.7.4",
   "description": "Lọc sản phẩm đang hiển thị trên kalodata.com theo doanh thu, lượt bán, giá, từ khoá... và phân tích bằng Claude.",
   "permissions": [
     "storage",
