@@ -78,6 +78,7 @@
       panel.innerHTML = `      <h3>⚡ Ra lệnh <small style="color:#999;font-weight:400">v${chrome.runtime.getManifest().version}</small></h3>
       <textarea id="kf-cmd" placeholder="VD: xem danh sách ngành hàng 7 ngày, doanh thu bình quân cửa hàng và doanh thu, trừ thời trang, đồ ăn, thực phẩm chức năng, điện tử chỉ lấy phụ kiện trừ ốp điện thoại">${localStorage.getItem('kf-last-cmd') || ''}</textarea>
       <button class="primary" id="kf-run">Thực hiện</button>
+      <button id="kf-cmd-clear">Xoá</button>
       <div class="stat" id="kf-cmd-status"></div>
       <ol id="kf-results"></ol>
       <hr>
@@ -91,6 +92,7 @@
       <h3>⚡ Ra lệnh <small style="color:#999;font-weight:400">v${chrome.runtime.getManifest().version}</small></h3>
       <textarea id="kf-cmd" placeholder="VD: xem danh sách ngành hàng 7 ngày, doanh thu bình quân cửa hàng và doanh thu, trừ thời trang, đồ ăn, thực phẩm chức năng, điện tử chỉ lấy phụ kiện trừ ốp điện thoại">${localStorage.getItem('kf-last-cmd') || ''}</textarea>
       <button class="primary" id="kf-run">Thực hiện</button>
+      <button id="kf-cmd-clear">Xoá</button>
       <div class="stat" id="kf-cmd-status"></div>
       <ol id="kf-results"></ol>
       <hr>
@@ -135,7 +137,7 @@
       const by = showResults(lastSort, [], collected);
       setStatus([`✓ Gom được ${collected.items.length} sản phẩm khớp điều kiện`, ...(by ? [`↓ Xếp theo: ${by}`] : []), ...dropSummary(collected.dropped)].join('\n'));
     };
-    panel.querySelector('#kf-reset').onclick = () => { clearInjected(); collected = null; save({}); render(); apply(); };
+    panel.querySelector('#kf-reset').onclick = () => { lastItems = null; clearInjected(); collected = null; save({}); render(); apply(); };
     panel.querySelector('#kf-csv').onclick = exportCSV;
     bindCmd();
     apply();
@@ -147,6 +149,13 @@
   const setStatus = t => { const el = panel.querySelector('#kf-cmd-status'); if (el) el.textContent = t; };
 
   function bindCmd() {
+    panel.querySelector('#kf-cmd-clear').onclick = () => {
+      const box = panel.querySelector('#kf-cmd');
+      box.value = '';
+      try { localStorage.removeItem('kf-last-cmd'); } catch {}
+      setStatus('');
+      box.focus();
+    };
     panel.querySelector('#kf-run').onclick = () => {
       const cmd = panel.querySelector('#kf-cmd').value.trim();
       if (cmd) runCommand(cmd);
@@ -317,6 +326,12 @@
   const firstRowText = () => { const t = getTable(); return t?.rows[0] ? rowData(t.rows[0]).join('|') : ''; };
 
   async function collectPages(f) {
+    busy = true;
+    lastItems = null;
+    clearInjected(); // dòng đang ẩn sẽ không đọc được chữ
+    try { return await collectPagesInner(f); } finally { busy = false; }
+  }
+  async function collectPagesInner(f) {
     const items = new Map();
     const dropped = {}; // lý do loại → tên sản phẩm
     pageWarn = '';
@@ -333,8 +348,10 @@
         const reason = why(d);
         const name = rowName(d);
         if (reason) { (dropped[reason] ||= []).push(name); return; }
-        if (name && !items.has(name)) { items.set(name, { name, d, img: row.querySelector('img')?.src || '', node: row.cloneNode(true), page, key: row.getAttribute('data-row-key') || '', link: row.querySelector('a[href]')?.href || '' }); kept++; }
+        if (name && !items.has(name)) { items.set(name, { name, d, img: row.querySelector('img')?.src || '', node: row.cloneNode(true), page, key: row.getAttribute('data-row-key') || '', row }); kept++; }
       });
+      // ghi link chi tiết của các dòng vừa giữ (trước khi sang trang khác)
+      for (const it of items.values()) if (it.row) { it.link = await captureLink(it.row, it.name); delete it.row; }
       pagesRead = page;
       setStatus(`📄 Trang ${page}: giữ ${kept} — tổng ${items.size}`);
       if (page === MAX_PAGES) break;
@@ -395,6 +412,9 @@
 
   // ---- Đưa kết quả vào thẳng bảng Kalodata: ẩn dòng bị loại, chèn dòng hợp lệ (từ mọi trang) lên đầu ----
   let injected = []; // các dòng đã chèn
+  let lastItems = null; // danh sách đã lọc đang được giữ trên bảng
+  let listUrl = '';     // trang của danh sách đó
+  let busy = false;     // extension đang tự lật trang → tạm không dựng lại danh sách
   function injectRows(items) {
     clearInjected();
     const table = getTable();
@@ -413,31 +433,84 @@
     });
     tbody.prepend(...injected);
   }
+  // Bấm thử tên/ảnh của dòng gốc ở chế độ "ghi link" (main.js chặn mở tab) → lấy link Kalodata định mở
+  const titleEl = (row, name) => [...row.querySelectorAll('*')].find(el => el.childElementCount === 0 && el.textContent.trim().length > 5 && name.startsWith(el.textContent.trim().slice(0, 15)));
+  async function captureLink(row, name) {
+    const a = row.querySelector('a[href]');
+    if (a) return a.href;
+    const root = document.documentElement;
+    const before = location.href;
+    root.dataset.kfCapture = '1';
+    delete root.dataset.kfUrl;
+    try {
+      for (const el of [titleEl(row, name), row.querySelector('img')].filter(Boolean)) {
+        el.click();
+        for (let t = 0; t < 4 && !root.dataset.kfUrl; t++) await sleep(25);
+        if (root.dataset.kfUrl) break;
+      }
+    } finally {
+      root.dataset.kfCapture = '0';
+    }
+    const url = root.dataset.kfUrl || '';
+    return url && url !== before ? url : '';
+  }
+  const openTab = url => chrome.runtime.sendMessage({ type: 'kf-open', url });
+
   // Mở trang chi tiết sản phẩm của dòng đã chèn
   async function openItem(it) {
-    if (it.link) return window.open(it.link, '_blank');
-    if (/^\d{8,}$/.test(it.key)) {
-      // dùng mã sản phẩm, giữ nguyên ngôn ngữ/tiền tệ/khu vực/thời gian của trang hiện tại
+    if (it.link) return openTab(it.link);
+    // mở thẳng trang chi tiết bằng mã: ngành hàng (6 số, vd 600001) hoặc sản phẩm (dãy số dài)
+    const isCategory = location.pathname.startsWith('/category');
+    const html = it.node?.outerHTML || '';
+    const id = isCategory
+      ? (/^\d{4,}$/.test(it.key) ? it.key : (html.match(/\b(6\d{5})\b/) || [])[1])
+      : (/^\d{8,}$/.test(it.key) ? it.key : (html.match(/\b(\d{15,20})\b/) || [])[1]);
+    if (id) {
+      // giữ nguyên ngôn ngữ/tiền tệ/khu vực/thời gian của trang hiện tại
       const cur = new URLSearchParams(location.search);
-      const q = new URLSearchParams({ id: it.key });
+      const q = new URLSearchParams({ id });
       for (const k of ['language', 'currency', 'region', 'dateRange']) if (cur.get(k)) q.set(k, cur.get(k));
-      return window.open(`/product/detail?${q}`, '_blank');
+      return openTab(new URL(`/${isCategory ? 'category' : 'product'}/detail?${q}`, location.origin).href);
     }
     // dự phòng: quay về trang gốc chứa sản phẩm rồi bấm vào dòng thật
     setStatus(`↪️ Đang tìm "${it.name.slice(0, 40)}…" ở trang ${it.page}`);
+    busy = true;
+    try {
     clearInjected();
-    for (let p = 2; p <= it.page; p++) {
+    const findRow = () => getTable()?.rows.find(r => rowName(rowData(r)) === it.name);
+    // chờ bảng đổi sang trang khác (tối đa ~8 giây)
+    const waitChange = async before => { for (let w = 0; w < 20 && firstRowText() === before; w++) await sleep(400); await sleep(300); };
+    const step = async n => {
       const t = getTable(); t?.rows[t.rows.length - 1]?.scrollIntoView({ block: 'center' });
       await sleep(300);
       const before = firstRowText();
-      if (!gotoPage(p)) break;
-      for (let w = 0; w < 20 && firstRowText() === before; w++) await sleep(400);
+      if (!(n === 1 ? gotoPage1() : gotoPage(n))) return false;
+      await waitChange(before);
+      return true;
+    };
+    let row = findRow();
+    if (!row) {
+      // luôn bắt đầu lại từ trang 1 (bảng có thể đang ở trang khác sau lần bấm trước)
+      await step(1);
+      for (let p = 2; p <= it.page && !(row = findRow()); p++) {
+        if (!(await step(p))) break;
+      }
+      row = findRow();
+      // thứ hạng có thể xê dịch → thử thêm trang kế tiếp
+      if (!row && await step(it.page + 1)) row = findRow();
     }
-    const row = getTable()?.rows.find(r => rowName(rowData(r)) === it.name);
     if (!row) return setStatus('⚠️ Không tìm thấy sản phẩm, hãy bấm Áp dụng lại');
+    setStatus(`✓ Đã mở "${it.name.slice(0, 40)}…"`);
     row.scrollIntoView({ block: 'center' });
     const title = [...row.querySelectorAll('*')].find(el => el.childElementCount === 0 && it.name.startsWith(el.textContent.trim().slice(0, 15)) && el.textContent.trim().length > 5);
     (title || row.querySelector('img') || row).click();
+    // Kalodata mở chi tiết ở tab mới → đưa bảng về trang 1 và dựng lại danh sách đã lọc
+    await sleep(1500);
+    if (location.href === listUrl && lastItems) {
+      await step(1);
+      injectRows(lastItems);
+    }
+    } finally { busy = false; }
   }
 
   function clearInjected() {
@@ -472,6 +545,8 @@
       : '<li>Không có sản phẩm nào khớp điều kiện.</li>';
     // bấm tên trong danh sách → mở trang chi tiết như bấm trong bảng
     [...box.children].forEach((li, k) => { if (items[k]) li.onclick = () => openItem(items[k]); });
+    lastItems = items;
+    listUrl = location.href;
     injectRows(items);
     return si >= 0 ? hs[si] : '';
   }
@@ -548,7 +623,8 @@
     if (!table) return;
     const why = makeMatcher(load(), table.headers);
     if (injected.length && injected[0].isConnected) table.rows.forEach(r => r.classList.add('kf-hidden')); // đang xem kết quả đã gom
-    else if (injected.length) clearInjected(); // Kalodata đã vẽ lại bảng (đổi trang/bộ lọc) → trả bảng gốc
+    else if (!busy && lastItems && location.href === listUrl) { injectRows(lastItems); return; } // Kalodata vẽ lại bảng → dựng lại danh sách đã lọc
+    else if (injected.length) clearInjected();
     const shown = table.rows.filter(r => !why(rowData(r))).length;
     const stat = panel.querySelector('#kf-stat');
     if (stat) stat.textContent = `Trang này: ${shown}/${table.rows.length} dòng khớp điều kiện`;

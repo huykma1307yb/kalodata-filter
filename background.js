@@ -2,6 +2,11 @@
 const DEFAULTS = { apiKey: '', model: 'claude-opus-5-5' };
 
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+  if (msg?.type === 'kf-open') { // mở tab mới ngay cạnh tab Kalodata (không bị chặn popup)
+    chrome.tabs.create({ url: msg.url, index: (_sender.tab?.index ?? -2) + 1, openerTabId: _sender.tab?.id });
+    reply({ ok: true });
+    return;
+  }
   const handler = { 'kf-ai': analyze, 'kf-plan': plan }[msg?.type];
   if (!handler) return;
   handler(msg).then(data => reply({ ok: true, ...data }), e => reply({ ok: false, error: e.message }));
